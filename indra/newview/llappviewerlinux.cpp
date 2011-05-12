@@ -74,6 +74,10 @@
 # include "llappviewerlinux_api.h"
 #endif
 
+#if LL_GTK
+# include "gdk/gdk.h"
+#endif // LL_GTK
+
 namespace
 {
 	int gArgC = 0;
@@ -92,6 +96,66 @@ static void exceptionTerminateHandler()
 	gOldTerminateHandler(); // call old terminate() handler
 }
 
++// Use this to debug deadlocks.
++#define DEBUG_GDK_LOCKING (0 && CWDEBUG_LOCATION)
++
++#if DEBUG_GDK_LOCKING
++apr_thread_mutex_t* gGdkMutexp = NULL;
++pthread_t last;
++int self_count = 0;
++bool lock_taken = false;
++bool printed;
++void* last_backtrace[32];
++int last_nptrs;
++
++static void enter_fn(void)
+{
+  pthread_t self = pthread_self();
+  void* self_backtrace[32];
+  int self_nptrs = backtrace(self_backtrace, 32);
+  if (self != last)
+  {
+   if (self_count > 1)
+      Dout(dc::notice, "Last calls by " << (void*)last << " repeated " << self_count << " times.");
+    Dout(dc::notice, "Calling apr_thread_mutex_lock(gGdkMutexp)");
+    printed = true;
+    self_count = 0;
+  }
+  else
+    printed = false;
+  ++self_count;
+  if (lock_taken)
+  {
+    if (last == self)
+    {
+      Dout(dc::warning, "RECURSIVE LOCK!");
+      Dout(dc::notice|flush_cf, "Previous backtrace:");
+      debug::BackTrace last_bt(last_backtrace, last_nptrs);
+      last_bt.dump_backtrace();
+      Dout(dc::notice|flush_cf, "Current backtrace:");
+      debug::BackTrace self_bt(self_backtrace, self_nptrs);
+      self_bt.dump_backtrace();
+    }
+    else       // This is actually quite normal but we print 'last' to have the info in case of a deadlock.
+      Dout(dc::notice, "LOCK ALREADY TAKEN BY THREAD " << (void*)last);
+  }
+  apr_thread_mutex_lock(gGdkMutexp);
+  lock_taken = true;
+  last = self;
+  std::memcpy(last_backtrace, self_backtrace, sizeof(last_backtrace));
+  last_nptrs = self_nptrs;
+}
+
+static void leave_fn(void)
+{
+  if (printed)
+    Dout(dc::notice, "Calling apr_thread_mutex_unlock(gGdkMutexp)");
+  apr_thread_mutex_unlock(gGdkMutexp);
+  lock_taken = false;
+}
+
+#endif // DEBUG_GDK_LOCKING
+
 int main( int argc, char **argv ) 
 {
 	LLMemType mt1(LLMemType::MTYPE_STARTUP);
@@ -102,6 +166,22 @@ int main( int argc, char **argv )
 
 	gArgC = argc;
 	gArgV = argv;
+
+#if LL_GTK
+	// Initialize threads correctly and early.
+	g_thread_init(NULL);
+#if DEBUG_GDK_LOCKING
+	LLAPRPool gdkPool;
+	apr_thread_mutex_create(&gGdkMutexp, APR_THREAD_MUTEX_UNNESTED, gdkPool());
+	gdk_threads_set_lock_functions(enter_fn, leave_fn);
+#endif
+	gdk_threads_init();
+	// We do NOT call GDK_THREADS_ENTER() here because 99% of the
+	// time we're not inside gtk functions in the main loop, but
+	// awefully busy redrawing the screen. By obtaining the lock
+	// and keeping it in the main loop, any thread that calls
+	// gtk_main() becomes, unnecessarily, very slow.
+#endif
 
 	LLAppViewer* viewer_app_ptr = new LLAppViewerLinux();
 
@@ -135,6 +215,7 @@ int main( int argc, char **argv )
 	}
 	delete viewer_app_ptr;
 	viewer_app_ptr = NULL;
+
 	return 0;
 }
 
