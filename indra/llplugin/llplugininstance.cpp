@@ -29,8 +29,7 @@
 #include "linden_common.h"
 
 #include "llplugininstance.h"
-
-#include "llapr.h"
+#include "aiaprpool.h"
 
 /** Virtual destructor. */
 LLPluginInstanceMessageListener::~LLPluginInstanceMessageListener()
@@ -79,7 +78,7 @@ int LLPluginInstance::load(std::string &plugin_file)
 	
 	int result = apr_dso_load(&mDSOHandle,
 					  plugin_file.c_str(),
-					  gAPRPoolp);
+					  AIAPRRootPool::get()());
 	if(result != APR_SUCCESS)
 	{
 		char buf[1024];

@@ -423,10 +423,12 @@ MediaPluginGStreamer010::update(int milliseconds)
 	// time is spent in gstreamer's own opaque worker-threads.  maybe
 	// we can do something sneaky like only unlock the video object
 	// for 'milliseconds' and otherwise hold the lock.
-	while (g_main_context_pending(g_main_loop_get_context(mPump)))
-	{
-	       g_main_context_iteration(g_main_loop_get_context(mPump), FALSE);
-	}
+	GMainContext* context = g_main_loop_get_context(mPump);
+	// g_main_context_pending and g_main_context_iteration do their
+	// own locking, so we'd have to release the mainloop lock here if
+	// we had it, with LL_THREADING_LEAVE(). However, we don't have it.
+	if (g_main_context_pending(context))
+		g_main_context_iteration(context, FALSE);
 
 	// check for availability of a new frame
 	
