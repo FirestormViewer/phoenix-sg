@@ -136,6 +136,7 @@ public:
 #if LL_GTK
 	// Lazily initialize and check the runtime GTK version for goodness.
 	static bool ll_try_gtk_init(void);
+	static BOOL sDoneGtkDiag;
 #endif // LL_GTK
 
 #if LL_X11

@@ -72,6 +72,42 @@ const S32 MAX_NUM_RESOLUTIONS = 200;
 // static variable for ATI mouse cursor crash work-around:
 static bool ATIbug = false;
 
+LLMutex* x11_display_lock;
+
+extern "C" {
+	void lock_display(void);
+	void unlock_display(void);
+}
+
+void lock_display(void)
+{
+	Dout(dc::sdl, "Calling lock_display()");
+	x11_display_lock->lock();
+}
+
+void unlock_display(void)
+{
+	x11_display_lock->unlock();
+}
+
+#define STRINGIFY(str) #str
+#define LL_SDL_LOCK(funcname) \
+	do { \
+	  	Dout(dc::sdl, "Calling " << funcname); \
+		x11_display_lock->lock(); \
+	   } while(0)
+#define LL_SDL_UNLOCK() \
+	do { \
+		x11_display_lock->unlock(); \
+	   } while(0)
+#define LL_SDL_CALL(funcname, params) \
+	do { \
+		Dout(dc::sdl, "Calling " STRINGIFY(funcname)); \
+		x11_display_lock->lock(); \
+		funcname params; \
+		x11_display_lock->unlock(); \
+	   } while(0)
+
 //
 // LLWindowSDL
 //
@@ -104,11 +140,13 @@ void maybe_unlock_display(void)
 
 
 #if LL_GTK
+// static
+BOOL LLWindowSDL::sDoneGtkDiag = FALSE;
+
 // Lazily initialize and check the runtime GTK version for goodness.
 // static
 bool LLWindowSDL::ll_try_gtk_init(void)
 {
-	static BOOL done_gtk_diag = FALSE;
 	static BOOL gtk_is_good = FALSE;
 	static BOOL done_setlocale = FALSE;
 	static BOOL tried_gtk_init = FALSE;
@@ -127,13 +165,14 @@ bool LLWindowSDL::ll_try_gtk_init(void)
 		tried_gtk_init = TRUE;
 		if (!g_thread_supported ()) g_thread_init (NULL);
 		maybe_lock_display();
+		Dout(dc::gtk, "Calling gtk_init_check(NULL, NULL)");
 		gtk_is_good = gtk_init_check(NULL, NULL);
 		maybe_unlock_display();
 		if (!gtk_is_good)
 			llwarns << "GTK Initialization failed." << llendl;
 	}
 
-	if (gtk_is_good && !done_gtk_diag)
+	if (gtk_is_good && !sDoneGtkDiag)
 	{
 		llinfos << "GTK Initialized." << llendl;
 		llinfos << "- Compiled against GTK version "
@@ -145,10 +184,12 @@ bool LLWindowSDL::ll_try_gtk_init(void)
 			<< gtk_minor_version << "."
 			<< gtk_micro_version << llendl;
 		maybe_lock_display();
+		GDK_THREADS_ENTER();
 		const gchar* gtk_warning = gtk_check_version(
 			GTK_MAJOR_VERSION,
 			GTK_MINOR_VERSION,
 			GTK_MICRO_VERSION);
+		GDK_THREADS_LEAVE();
 		maybe_unlock_display();
 		if (gtk_warning)
 		{
@@ -159,7 +200,7 @@ bool LLWindowSDL::ll_try_gtk_init(void)
 			llinfos << "- GTK version is good." << llendl;
 		}
 
-		done_gtk_diag = TRUE;
+		sDoneGtkDiag = TRUE;
 	}
 
 	return gtk_is_good;
@@ -264,7 +305,11 @@ static SDL_Surface *Load_BMP_Resource(const char *basename)
 		 basename);
 	path_buffer[PATH_BUFFER_SIZE-1] = '\0';
 	
-	return SDL_LoadBMP(path_buffer);
+	LL_SDL_LOCK("SDL_LoadBMP");
+	SDL_Surface* ret = SDL_LoadBMP(path_buffer);
+	LL_SDL_UNLOCK();
+
+	return ret;
 }
 
 #if LL_X11
@@ -458,12 +503,18 @@ BOOL LLWindowSDL::createContext(int x, int y, int width, int height, int bits, B
 		return FALSE;
 	}
 
+	assert(!x11_display_lock);		// We only get here once, right?
+	x11_display_lock = new LLMutex(NULL);
+
+	LL_SDL_LOCK("SDL_EnableUNICODE / SDL_WM_SetCaption");
 	SDL_EnableUNICODE(1);
 	SDL_WM_SetCaption(mWindowTitle.c_str(), mWindowTitle.c_str());
+	LL_SDL_UNLOCK();
 
 	// Set the application icon.
 	SDL_Surface *bmpsurface;
 	bmpsurface = Load_BMP_Resource("phoenix_icon.BMP");
+	LL_SDL_LOCK("SDL functions inside LLWindowSDL::createContext");
 	if (bmpsurface)
 	{
 		// This attempts to give a black-keyed mask to the icon.
@@ -639,6 +690,9 @@ BOOL LLWindowSDL::createContext(int x, int y, int width, int height, int bits, B
 		{
 			llwarns << "createContext: window creation failure. SDL: " << SDL_GetError() << llendl;
 			setupFailure("Window creation error", "Error", OSMB_OK);
+
+			LL_SDL_UNLOCK();
+
 			return FALSE;
 		}
 	} else if (!mFullscreen && (mWindow != NULL))
@@ -714,6 +768,9 @@ BOOL LLWindowSDL::createContext(int x, int y, int width, int height, int bits, B
 			"will automatically adjust the screen each time it runs.",
 			"Error",
 			OSMB_OK);
+
+		LL_SDL_UNLOCK();
+
 		return FALSE;
 	}
 
@@ -730,6 +787,9 @@ BOOL LLWindowSDL::createContext(int x, int y, int width, int height, int bits, B
 			"If you continue to receive this message, contact customer service.",
 			"Error",
 			OSMB_OK);
+
+		LL_SDL_UNLOCK();
+
 		return FALSE;
 	}
 #endif
@@ -745,8 +805,8 @@ BOOL LLWindowSDL::createContext(int x, int y, int width, int height, int bits, B
 		{
 			mSDL_Display = info.info.x11.display;
 			mSDL_XWindowID = info.info.x11.wmwindow;
-			Lock_Display = info.info.x11.lock_func;
-			Unlock_Display = info.info.x11.unlock_func;
+			Lock_Display = lock_display; //info.info.x11.lock_func;
+			Unlock_Display = unlock_display; //info.info.x11.unlock_func;
 		}
 		else
 		{
@@ -771,6 +831,9 @@ BOOL LLWindowSDL::createContext(int x, int y, int width, int height, int bits, B
 	    llwarns << "Couldn't enable key-repeat: " << SDL_GetError() <<llendl;
 
 	// Don't need to get the current gamma, since there's a call that restores it to the system defaults.
+
+	LL_SDL_UNLOCK();
+
 	return TRUE;
 }
 
@@ -817,7 +880,7 @@ void LLWindowSDL::destroyContext()
 	llinfos << "shutdownGL begins" << llendl;
 	gGLManager.shutdownGL();
 	llinfos << "SDL_QuitSS/VID begins" << llendl;
-	SDL_QuitSubSystem(SDL_INIT_VIDEO);  // *FIX: this might be risky...
+	LL_SDL_CALL(SDL_QuitSubSystem, (SDL_INIT_VIDEO));  // *FIX: this might be risky...
 
 	mWindow = NULL;
 }
@@ -980,7 +1043,7 @@ BOOL LLWindowSDL::setSize(const LLCoordScreen size)
 		event.type = SDL_VIDEORESIZE;
 		event.resize.w = size.mX;
 		event.resize.h = size.mY;
-		SDL_PushEvent(&event); // copied into queue
+		SDL_PushEvent(&event); // copied into queue	// No need to SDL_LOCK, because this doesn't call libx11.
 
 		return TRUE;
 	}
@@ -991,7 +1054,7 @@ BOOL LLWindowSDL::setSize(const LLCoordScreen size)
 void LLWindowSDL::swapBuffers()
 {
 	if (mWindow)
-		SDL_GL_SwapBuffers();
+		SDL_GL_SwapBuffers();	// Calls glXSwapBuffers, do we need a lock here?
 }
 
 U32 LLWindowSDL::getFSAASamples()
@@ -1012,7 +1075,7 @@ F32 LLWindowSDL::getGamma()
 BOOL LLWindowSDL::restoreGamma()
 {
 	//CGDisplayRestoreColorSyncSettings();
-    SDL_SetGamma(1.0f, 1.0f, 1.0f);
+	LL_SDL_CALL(SDL_SetGamma, (1.0f, 1.0f, 1.0f));
 	return true;
 }
 
@@ -1021,7 +1084,7 @@ BOOL LLWindowSDL::setGamma(const F32 gamma)
 	mGamma = gamma;
 	if (mGamma == 0) mGamma = 0.1f;
 	mGamma = 1/mGamma;
-	SDL_SetGamma(mGamma, mGamma, mGamma);
+	LL_SDL_CALL(SDL_SetGamma, (mGamma, mGamma, mGamma));
 	return true;
 }
 
@@ -1051,7 +1114,7 @@ BOOL LLWindowSDL::setCursorPosition(const LLCoordWindow position)
 	//llinfos << "setCursorPosition(" << screen_pos.mX << ", " << screen_pos.mY << ")" << llendl;
 
 	// do the actual forced cursor move.
-	SDL_WarpMouse(screen_pos.mX, screen_pos.mY);
+	LL_SDL_CALL(SDL_WarpMouse, (screen_pos.mX, screen_pos.mY));
 	
 	//llinfos << llformat("llcw %d,%d -> scr %d,%d", position.mX, position.mY, screen_pos.mX, screen_pos.mY) << llendl;
 
@@ -1064,8 +1127,8 @@ BOOL LLWindowSDL::getCursorPosition(LLCoordWindow *position)
 	LLCoordScreen screen_pos;
 
 	//GetMouse(&cursor_point);
-    int x, y;
-    SDL_GetMouseState(&x, &y);
+	int x, y;
+	SDL_GetMouseState(&x, &y);	// Simple accessor, does not call libx11 functions, so not lock is needed.
 
 	screen_pos.mX = x;
 	screen_pos.mY = y;
@@ -1149,7 +1212,7 @@ void LLWindowSDL::beforeDialog()
 			// it only works in X11
 			if (running_x11 && mWindow)
 			{
-				SDL_WM_ToggleFullScreen(mWindow);
+				LL_SDL_CALL(SDL_WM_ToggleFullScreen, (mWindow));
 			}
 		}
 	}
@@ -1170,8 +1233,6 @@ void LLWindowSDL::beforeDialog()
 	// diagnostics, if not already done.
 	ll_try_gtk_init();
 #endif // LL_GTK
-
-	maybe_lock_display();
 }
 
 void LLWindowSDL::afterDialog()
@@ -1183,15 +1244,13 @@ void LLWindowSDL::afterDialog()
 
 	llinfos << "LLWindowSDL::afterDialog()" << llendl;
 
-	maybe_unlock_display();
-
 	if (mFullscreen)
 	{
 		// need to restore fullscreen mode after dialog - only works
 		// in X11
 		if (running_x11 && mWindow)
 		{
-			SDL_WM_ToggleFullScreen(mWindow);
+			LL_SDL_CALL(SDL_WM_ToggleFullScreen, (mWindow));
 		}
 	}
 }
@@ -1249,10 +1308,13 @@ BOOL LLWindowSDL::isClipboardTextAvailable()
 {
 	if (ll_try_gtk_init())
 	{
+		GDK_THREADS_ENTER();
 		GtkClipboard * const clipboard =
 			gtk_clipboard_get(GDK_NONE);
-		return gtk_clipboard_wait_is_text_available(clipboard) ?
+		BOOL rv = gtk_clipboard_wait_is_text_available(clipboard) ?
 			TRUE : FALSE;
+		GDK_THREADS_LEAVE();
+		return rv;
 	}
 	return FALSE; // failure
 }
@@ -1261,9 +1323,11 @@ BOOL LLWindowSDL::pasteTextFromClipboard(LLWString &text)
 {
 	if (ll_try_gtk_init())
 	{
+		GDK_THREADS_ENTER();
 		GtkClipboard * const clipboard =
 			gtk_clipboard_get(GDK_NONE);
 		gchar * const data = gtk_clipboard_wait_for_text(clipboard);
+		GDK_THREADS_LEAVE();
 		if (data)
 		{
 			text = LLWString(utf8str_to_wstring(data));
@@ -1279,9 +1343,11 @@ BOOL LLWindowSDL::copyTextToClipboard(const LLWString &text)
 	if (ll_try_gtk_init())
 	{
 		const std::string utf8 = wstring_to_utf8str(text);
+		GDK_THREADS_ENTER();
 		GtkClipboard * const clipboard =
 			gtk_clipboard_get(GDK_NONE);
 		gtk_clipboard_set_text(clipboard, utf8.c_str(), utf8.length());
+		GDK_THREADS_LEAVE();
 		return TRUE;
 	}
 	return FALSE; // failure
@@ -1312,7 +1378,9 @@ LLWindow::LLWindowResolution* LLWindowSDL::getSupportedResolutions(S32 &num_reso
 		mSupportedResolutions = new LLWindowResolution[MAX_NUM_RESOLUTIONS];
 		mNumSupportedResolutions = 0;
 
+	LL_SDL_LOCK("SDL_ListModes");
         SDL_Rect **modes = SDL_ListModes(NULL, SDL_OPENGL | SDL_FULLSCREEN);
+	LL_SDL_UNLOCK();
         if ( (modes != NULL) && (modes != ((SDL_Rect **) -1)) )
         {
             int count = 0;
@@ -1547,7 +1615,7 @@ void LLWindowSDL::processMiscNativeEvents()
 	// * Embedded Gecko
 	// * DBUS servicing
 	// * Anything else which quietly hooks into the default glib/GTK loop
-    if (ll_try_gtk_init())
+    if (sDoneGtkDiag || ll_try_gtk_init())
     {
 	    // Yuck, Mozilla's GTK callbacks play with the locale - push/pop
 	    // the locale to protect it, as exotic/non-C locales
@@ -1561,12 +1629,23 @@ void LLWindowSDL::processMiscNativeEvents()
 	    static LLTimer pump_timer;
 	    pump_timer.reset();
 	    pump_timer.setTimerExpirySec(1.0f / 15.0f);
-	    do {
-		     // Always do at least one non-blocking pump
+	    int count = 0;
+	    GDK_THREADS_ENTER();
+	    while (gtk_events_pending())
+	    {
+		    ++count;
 		    gtk_main_iteration_do(0);
-	    } while (gtk_events_pending() &&
-		     !pump_timer.hasExpired());
-
+		    if (pump_timer.hasExpired())
+		    {
+			    Dout(dc::gtk, "LLWindowSDL::processMiscNativeEvents loop timer expired!");
+			    break;
+		    }
+	    }
+	    GDK_THREADS_LEAVE();
+	    if (count > 0)
+	    {
+		    Dout(dc::gtk, "Called gtk_main_iteration_do(0) " << count << " times.");
+	    }
 	    setlocale(LC_ALL, saved_locale.c_str() );
     }
 #endif // LL_GTK
@@ -1582,8 +1661,13 @@ void LLWindowSDL::gatherInput()
     SDL_Event event;
 
     // Handle all outstanding SDL events
-    while (SDL_PollEvent(&event))
+    for (;;)
     {
+	GDK_THREADS_ENTER();
+	bool done = !SDL_PollEvent(&event);
+	GDK_THREADS_LEAVE();
+	if (done)
+		break;
         switch (event.type)
         {
             case SDL_MOUSEMOTION:
@@ -1626,7 +1710,7 @@ void LLWindowSDL::gatherInput()
 
                 if (event.button.button == SDL_BUTTON_LEFT)   // SDL doesn't manage double clicking...
                 {
-                    Uint32 now = SDL_GetTicks();
+                    Uint32 now = SDL_GetTicks();	// No lock needed; does not do libx11 calls.
                     if ((now - lastLeftDown) > CLICK_THRESHOLD)
                         leftClick = 1;
                     else
@@ -1707,7 +1791,9 @@ void LLWindowSDL::gatherInput()
 			"x" << event.resize.h << llendl;
 
 		// *FIX: I'm not sure this is necessary!
+		LL_SDL_LOCK("SDL_SetVideoMode");
 		mWindow = SDL_SetVideoMode(event.resize.w, event.resize.h, 32, mSDLFlags);
+		LL_SDL_UNLOCK();
 		if (!mWindow)
 		{
 			// *FIX: More informative dialog?
@@ -1806,12 +1892,14 @@ static SDL_Cursor *makeSDLCursorFromBMP(const char *filename, int hotx, int hoty
 						   SDL_SwapLE32(0xFF00U),
 						   SDL_SwapLE32(0xFF0000U),
 						   SDL_SwapLE32(0xFF000000U));
-		SDL_FillRect(cursurface, NULL, SDL_SwapLE32(0x00000000U));
+		LL_SDL_CALL(SDL_FillRect, (cursurface, NULL, SDL_SwapLE32(0x00000000U)));
 
 		// Blit the cursor pixel data onto a 32-bit RGBA surface so we
 		// only have to cope with processing one type of pixel format.
-		if (0 == SDL_BlitSurface(bmpsurface, NULL,
-					 cursurface, NULL))
+		LL_SDL_LOCK("SDL_BlitSurface");
+		int ret = SDL_BlitSurface(bmpsurface, NULL, cursurface, NULL);
+		LL_SDL_UNLOCK();
+		if (0 == ret)
 		{
 			// n.b. we already checked that width is a multiple of 8.
 			const int bitmap_bytes = (cursurface->w * cursurface->h) / 8;
@@ -1842,17 +1930,19 @@ static SDL_Cursor *makeSDLCursorFromBMP(const char *filename, int hotx, int hoty
 					cursor_mask[bit_offset]	|= (mask_bit) << (7 - (j&7));
 				}
 			}
+			LL_SDL_LOCK("SDL_CreateCursor");
 			sdlcursor = SDL_CreateCursor((Uint8*)cursor_data,
 						     (Uint8*)cursor_mask,
 						     cursurface->w, cursurface->h,
 						     hotx, hoty);
+			LL_SDL_UNLOCK();
 			delete[] cursor_data;
 			delete[] cursor_mask;
 		} else {
 			llwarns << "CURSOR BLIT FAILURE, cursurface: " << cursurface << llendl;
 		}
-		SDL_FreeSurface(cursurface);
-		SDL_FreeSurface(bmpsurface);
+		LL_SDL_CALL(SDL_FreeSurface, (cursurface));
+		LL_SDL_CALL(SDL_FreeSurface, (bmpsurface));
 	} else {
 		llwarns << "CURSOR LOAD FAILURE " << filename << llendl;
 	}
@@ -1878,7 +1968,7 @@ void LLWindowSDL::setCursor(ECursorType cursor)
 			if (!sdlcursor && mSDLCursors[UI_CURSOR_ARROW])
 				sdlcursor = mSDLCursors[UI_CURSOR_ARROW];
 			if (sdlcursor)
-				SDL_SetCursor(sdlcursor);
+				LL_SDL_CALL(SDL_SetCursor, (sdlcursor));
 		} else {
 			llwarns << "Tried to set invalid cursor number " << cursor << llendl;
 		}
@@ -1951,7 +2041,7 @@ void LLWindowSDL::quitCursors()
 		{
 			if (mSDLCursors[i])
 			{
-				SDL_FreeCursor(mSDLCursors[i]);
+				LL_SDL_CALL(SDL_FreeCursor, (mSDLCursors[i]));
 				mSDLCursors[i] = NULL;
 			}
 		}
@@ -1989,7 +2079,7 @@ void LLWindowSDL::hideCursor()
 		// llinfos << "hideCursor: hiding" << llendl;
 		mCursorHidden = TRUE;
 		mHideCursorPermanent = TRUE;
-		SDL_ShowCursor(0);
+		LL_SDL_CALL(SDL_ShowCursor, (0));
 	}
 	else
 	{
@@ -2004,7 +2094,7 @@ void LLWindowSDL::showCursor()
 		// llinfos << "showCursor: showing" << llendl;
 		mCursorHidden = FALSE;
 		mHideCursorPermanent = FALSE;
-		SDL_ShowCursor(1);
+		LL_SDL_CALL(SDL_ShowCursor, (1));
 	}
 	else
 	{
@@ -2100,6 +2190,7 @@ S32 OSMessageBoxSDL(const std::string& text, const std::string& caption, U32 typ
 			buttons = GTK_BUTTONS_YES_NO;
 			break;
 		}
+		GDK_THREADS_ENTER();
 		win = gtk_message_dialog_new(NULL, flags, messagetype, buttons, "%s",
 									 text.c_str());
 
@@ -2137,6 +2228,7 @@ S32 OSMessageBoxSDL(const std::string& text, const std::string& caption, U32 typ
 		// gtk_main(), so we manage its signal/destruction outselves.
 		gtk_widget_show_all (win);
 		gtk_main();
+		GDK_THREADS_LEAVE();
 
 		//llinfos << "response: " << response << llendl;
 		switch (response)
@@ -2182,6 +2274,8 @@ BOOL LLWindowSDL::dialog_color_picker ( F32 *r, F32 *g, F32 *b)
 
 	if (ll_try_gtk_init())
 	{
+		GDK_THREADS_ENTER();
+
 		GtkWidget *win = NULL;
 
 		win = gtk_color_selection_dialog_new(NULL);
@@ -2228,6 +2322,8 @@ BOOL LLWindowSDL::dialog_color_picker ( F32 *r, F32 *g, F32 *b)
 		// hide the help button - we don't service it.
 		gtk_widget_hide(GTK_COLOR_SELECTION_DIALOG(win)->help_button);
 		gtk_main();
+
+		GDK_THREADS_LEAVE();
 
 		if (response == GTK_RESPONSE_OK &&
 		    (orig_color.red != color.red
@@ -2331,6 +2427,7 @@ void *LLWindowSDL::getPlatformWindow()
 	{
 		maybe_lock_display();
 
+		GDK_THREADS_ENTER();
 		GtkWidget *owin = gtk_window_new(GTK_WINDOW_POPUP);
 		// Why a layout widget?  A MozContainer would be ideal, but
 		// it involves exposing Mozilla headers to mozlib-using apps.
@@ -2341,6 +2438,7 @@ void *LLWindowSDL::getPlatformWindow()
 		gtk_container_add(GTK_CONTAINER(owin), rtnw);
 		gtk_widget_realize(rtnw);
 		GTK_WIDGET_UNSET_FLAGS(GTK_WIDGET(rtnw), GTK_NO_WINDOW);
+		GDK_THREADS_LEAVE();
 		
 		maybe_unlock_display();
 		

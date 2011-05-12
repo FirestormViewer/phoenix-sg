@@ -1018,6 +1018,7 @@ GtkWindow* LLFilePicker::buildFilePicker(bool is_save, bool is_folder, std::stri
 {
 	if (LLWindowSDL::ll_try_gtk_init())
 	{
+		GDK_THREADS_ENTER();
 		GtkWidget *win = NULL;
 		GtkFileChooserAction pickertype =
 			is_save?
@@ -1080,7 +1081,7 @@ GtkWindow* LLFilePicker::buildFilePicker(bool is_save, bool is_folder, std::stri
 		/* GTK 2.6: if (is_folder)
 			gtk_file_chooser_set_show_hidden(GTK_FILE_CHOOSER(win),
 			TRUE); */
-
+		GDK_THREADS_LEAVE();
 		return GTK_WINDOW(win);
 	}
 	else
@@ -1160,6 +1161,7 @@ BOOL LLFilePicker::getSaveFile( ESaveFilter filter, const std::string& filename 
 
 	if (picker)
 	{
+		GDK_THREADS_ENTER();
 		std::string suggest_name = "untitled";
 		std::string suggest_ext = "";
 		std::string caption = LLTrans::getString("save_file_verb") + " ";
@@ -1228,7 +1230,7 @@ BOOL LLFilePicker::getSaveFile( ESaveFilter filter, const std::string& filename 
 
 		gtk_widget_show_all(GTK_WIDGET(picker));
 		gtk_main();
-
+		GDK_THREADS_LEAVE();
 		rtn = (getFileCount() == 1);
 	}
 
@@ -1249,6 +1251,7 @@ BOOL LLFilePicker::getOpenFile( ELoadFilter filter )
 
 	if (picker)
 	{
+		GDK_THREADS_ENTER();
 		std::string caption = LLTrans::getString("load_file_verb") + " ";
 		std::string filtername = "";
 		switch (filter)
@@ -1272,7 +1275,7 @@ BOOL LLFilePicker::getOpenFile( ELoadFilter filter )
 
 		gtk_widget_show_all(GTK_WIDGET(picker));
 		gtk_main();
-
+		GDK_THREADS_LEAVE();
 		rtn = (getFileCount() == 1);
 	}
 
@@ -1293,6 +1296,7 @@ BOOL LLFilePicker::getMultipleOpenFiles( ELoadFilter filter )
 
 	if (picker)
 	{
+		GDK_THREADS_ENTER();
 		gtk_file_chooser_set_select_multiple (GTK_FILE_CHOOSER(picker),
 						      TRUE);
 
@@ -1300,6 +1304,7 @@ BOOL LLFilePicker::getMultipleOpenFiles( ELoadFilter filter )
 
 		gtk_widget_show_all(GTK_WIDGET(picker));
 		gtk_main();
+		GDK_THREADS_LEAVE();
 		rtn = !mFiles.empty();
 	}
 

@@ -294,11 +294,13 @@ BOOL LLDirPicker::getDir(std::string* filename)
 								 "dirpicker");
 
 		if (picker)
-		{		   
-		   gtk_window_set_title(GTK_WINDOW(picker), LLTrans::getString("choose_the_directory").c_str());
-		   gtk_widget_show_all(GTK_WIDGET(picker));
-		   gtk_main();
-		   return (!mFilePicker->getFirstFile().empty());
+		{
+			GDK_THREADS_ENTER();
+			gtk_window_set_title(GTK_WINDOW(picker), LLTrans::getString("choose_the_directory").c_str());
+			gtk_widget_show_all(GTK_WIDGET(picker));
+			gtk_main();
+			GDK_THREADS_LEAVE();
+			return (!mFilePicker->getFirstFile().empty());
 		}
 	}
 	return FALSE;
