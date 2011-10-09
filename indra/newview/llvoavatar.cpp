@@ -3283,7 +3283,7 @@ void LLVOAvatar::resolveClient(LLColor4& avatar_name_color, std::string& client,
 	{
 		LLSD cllsd = LLVOAvatar::sClientResolutionList[idx.asString()];
 		static BOOL* sPhoenixClientTagsShowAny = rebind_llcontrol<BOOL>("PhoenixClientTagsShowAny", &gSavedSettings, true);
-		if (*sPhoenixClientTagsShowAny || (cllsd.has("tpvd") && cllsd["tpvd"].asBoolean()))
+		if (*sPhoenixClientTagsShowAny || (cllsd.has("tpvd2") && cllsd["tpvd2"].asBoolean()))
 		{
 			LLColor4 colour;
 			static BOOL* sPhoenixDontUseMultipleColorTags = rebind_llcontrol<BOOL>("PhoenixDontUseMultipleColorTags", &gSavedSettings, true);
@@ -3366,6 +3366,7 @@ void LLVOAvatar::resolveClient(LLColor4& avatar_name_color, std::string& client,
 			client = "Viewer 2";
 		}
 	}
+#if 0 // removed for PHOE-3436
 	if(avatar->getTE(5)->getID() != avatar->getTE(6)->getID() && client != "" && avatar->isReallyFullyLoaded())
 	{
 		client = "Failure";
@@ -3381,6 +3382,7 @@ void LLVOAvatar::resolveClient(LLColor4& avatar_name_color, std::string& client,
 			client = "Invalid";
 		}
 	}
+#endif
 	if(client == "" && LLVOAvatar::sClientResolutionList.has("default"))
 	{
 		LLSD cllsd = LLVOAvatar::sClientResolutionList["default"];
